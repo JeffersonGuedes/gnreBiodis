@@ -249,7 +249,7 @@ def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
 # --- INTERFACE ---
 
 st.set_page_config(page_title="Gerador de Lote GNRE", layout="wide")
-st.title("📄 Gerador de Lote GNRE (Blindado)")
+st.title("📄 Gerador de Lote GNRE")
 
 with st.sidebar:
     st.header("Configurações")
