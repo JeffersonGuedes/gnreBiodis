@@ -1,6 +1,6 @@
 import streamlit as st
 import xml.etree.ElementTree as ET
-from datetime import date
+from datetime import date, datetime
 import re
 
 # --- FUNÇÕES DE LIMPEZA E FORMATAÇÃO ---
@@ -85,7 +85,7 @@ def get_valores_robusto(root):
 
 # --- PROCESSAMENTO PRINCIPAL ---
 
-def processar_nfe(arquivo_xml, receita, produto, data_pagamento, modo_doc):
+def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
     try:
         tree = ET.parse(arquivo_xml)
         root = tree.getroot()
@@ -168,22 +168,19 @@ def processar_nfe(arquivo_xml, receita, produto, data_pagamento, modo_doc):
 
     # --- LÓGICA DE RESOLUÇÃO DE ERROS (217 e 302) ---
     
-    # Configuração Padrão
-    tipo_doc_final = "10" 
+    # Configuração Padrão - Opção 1 fixada
+    # Tenta enganar o sistema usando Tipo 10 (Aceito) mas com Numero curto (Evita 302)
+    tipo_doc_final = "10"
     valor_doc_final = numero_nota # Padrão seguro para Tipo 10 é o NÚMERO, não a CHAVE
     
-    if "Opção 1" in modo_doc:
-        # Tenta enganar o sistema usando Tipo 10 (Aceito) mas com Numero curto (Evita 302)
-        tipo_doc_final = "10"
-        valor_doc_final = numero_nota 
-    elif "Opção 2" in modo_doc:
-        # Usa o Tipo específico de NFe (moderno)
-        tipo_doc_final = "22"
-        valor_doc_final = chave_acesso
-    elif "Opção 3" in modo_doc:
-        # Padrão antigo
-        tipo_doc_final = "18"
-        valor_doc_final = numero_nota
+    # Opções comentadas caso precise alterar no futuro:
+    # Opção 2: Tipo 22 + Chave de Acesso (Estados Modernos)
+    # tipo_doc_final = "22"
+    # valor_doc_final = chave_acesso
+    
+    # Opção 3: Tipo 18 + Nº da Nota (Padrão Antigo)
+    # tipo_doc_final = "18"
+    # valor_doc_final = numero_nota
     
     # --- MONTAGEM XML ---
     
@@ -257,18 +254,8 @@ st.title("📄 Gerador de Lote GNRE (Blindado)")
 with st.sidebar:
     st.header("Configurações")
     
-    st.info("💡 **Dica de Ouro:** Comece pela Opção 1. Se der erro de 'Tipo', tente a Opção 2.")
-    
-    # SELETOR INTELIGENTE
-    modo_doc = st.radio(
-        "Como preencher o Documento Origem?",
-        (
-            "Opção 1: Tipo 10 + Nº da Nota (Resolve erro 302 e 217)", 
-            "Opção 2: Tipo 22 + Chave de Acesso (Estados Modernos)",
-            "Opção 3: Tipo 18 + Nº da Nota (Padrão Antigo)"
-        ),
-        index=0 
-    )
+    # Modo fixo: Tipo 10 + Nº da Nota (Resolve erro 302 e 217)
+    # Para alterar o modo, edite diretamente no código da função processar_nfe()
     
     cod_receita = st.text_input("Código Receita", value="100102")
     cod_produto = st.text_input("Código Produto", value="88")
@@ -290,7 +277,7 @@ if uploaded_files:
 
         for i, file in enumerate(uploaded_files):
             file.seek(0)
-            guia_str, status = processar_nfe(file, cod_receita, cod_produto, data_pagto, modo_doc)
+            guia_str, status = processar_nfe(file, cod_receita, cod_produto, data_pagto)
             
             if guia_str:
                 guias_xml.append(guia_str)
@@ -306,8 +293,9 @@ if uploaded_files:
 
         if guias_xml:
             conteudo_final = header + "\n".join(guias_xml) + "\n" + footer
+            nome_arquivo = f"Lote_GNRE_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.xml"
             st.success(f"Lote Gerado! Total: R$ {total_valor_lote:.2f}")
-            st.download_button("⬇️ Baixar Lote XML", data=conteudo_final, file_name="Lote_GNRE_Final_V4.xml", mime="application/xml")
+            st.download_button("⬇️ Baixar Lote XML", data=conteudo_final, file_name=nome_arquivo, mime="application/xml")
         else:
             st.warning("Sem guias geradas.")
 
