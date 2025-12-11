@@ -98,7 +98,6 @@ polyfactory==2.22.2
 prompt_toolkit==3.0.51
 protobuf==6.31.1
 psutil==7.1.0
-psycopg2==2.9.10
 psycopg2-binary==2.9.10
 pyarrow==20.0.0
 pyclipper==1.3.0.post6
