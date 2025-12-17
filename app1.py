@@ -6,6 +6,7 @@ import re
 # --- FUNÇÕES DE LIMPEZA E FORMATAÇÃO ---
 
 def escape_xml(texto):
+    """Substitui caracteres especiais que quebram o XML."""
     if not texto: return ""
     texto = str(texto)
     texto = texto.replace("&", "&amp;")
@@ -16,21 +17,25 @@ def escape_xml(texto):
     return texto.strip()
 
 def limpar_numero(texto):
+    """Remove tudo que não for número."""
     if not texto: return ""
     return "".join(filter(str.isdigit, str(texto)))
 
 def formatar_ibge_5_digitos(codigo_ibge):
+    """Garante IBGE com 5 dígitos."""
     codigo = limpar_numero(codigo_ibge)
     if len(codigo) >= 5:
         return codigo[-5:]
     return codigo
 
 def clean_tag(tag):
+    """Remove o namespace {http://...} da tag."""
     if '}' in tag:
         return tag.split('}')[-1]
     return tag
 
 def find_text_recursive(root, tag_name):
+    """Busca o texto de uma tag em qualquer lugar."""
     for elem in root.iter():
         if clean_tag(elem.tag) == tag_name:
             return elem.text
@@ -39,9 +44,11 @@ def find_text_recursive(root, tag_name):
 # --- LÓGICA DE VALORES ---
 
 def get_valores_robusto(root):
+    """Prioriza vST ou vICMSUFDest no Total. Se zero, soma os Itens."""
     val_st_total = 0.0
     val_difal_total = 0.0
 
+    # 1. Busca no bloco de Totais
     icms_tot = None
     for elem in root.iter():
         if clean_tag(elem.tag) == 'ICMSTot':
@@ -59,6 +66,7 @@ def get_valores_robusto(root):
     if val_st_total > 0: return val_st_total
     if val_difal_total > 0: return val_difal_total
 
+    # 2. Soma Itens (Fallback)
     soma_st = 0.0
     soma_difal = 0.0
 
@@ -75,44 +83,6 @@ def get_valores_robusto(root):
     if soma_difal > 0: return soma_difal
     return 0.0
 
-# --- LÓGICA DE REGRAS POR UF ---
-
-def obter_regras_uf(uf):
-    uf = uf.upper().strip()
-    
-    regras = {
-        'campo_extra': None,     
-        'tipo_doc': '10',        
-        'usar_chave_doc': False, 
-        'usa_detalhamento': False 
-    }
-
-    if uf == 'AL': # Alagoas
-        regras['campo_extra'] = 90
-        
-    elif uf == 'MS': # Mato Grosso do Sul
-        regras['campo_extra'] = 88 
-        
-    elif uf == 'GO': # Goiás
-        regras['campo_extra'] = 102
-        
-    elif uf == 'RO': # Rondônia
-        regras['campo_extra'] = 83
-        
-    elif uf == 'TO': # Tocantins
-        regras['campo_extra'] = 80
-        
-    elif uf == 'SC': # Santa Catarina
-        regras['tipo_doc'] = '24' 
-        regras['usar_chave_doc'] = True 
-        
-    elif uf == 'MT': # Mato Grosso
-        regras['tipo_doc'] = '22' 
-        regras['usar_chave_doc'] = True
-        regras['usa_detalhamento'] = True 
-    
-    return regras
-
 # --- PROCESSAMENTO PRINCIPAL ---
 
 def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
@@ -120,7 +90,7 @@ def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
         tree = ET.parse(arquivo_xml)
         root = tree.getroot()
         
-        # --- DADOS ---
+        # --- 1. DADOS DO EMITENTE ---
         emit_cnpj = limpar_numero(find_text_recursive(root, 'CNPJ'))
         emit_xNome = find_text_recursive(root, 'xNome')
         emit_xLgr = find_text_recursive(root, 'xLgr')
@@ -144,6 +114,7 @@ def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
         emit_cep = limpar_numero(find_text_recursive(root, 'CEP'))
         emit_fone = limpar_numero(find_text_recursive(root, 'fone'))
 
+        # --- 2. DADOS DO DESTINATÁRIO ---
         dest_cnpj = None
         dest_cpf = None
         dest_xNome = None
@@ -175,15 +146,18 @@ def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
         val_id_dest = dest_cnpj if dest_cnpj else dest_cpf
         if not val_id_dest: return None, "Destinatário sem Doc."
 
+        # --- 3. VALORES E CHAVES ---
         valor_pagar = get_valores_robusto(root)
         valor_str = f"{valor_pagar:.2f}"
         
+        # Dados da Nota
         chave_acesso = limpar_numero(find_text_recursive(root, 'chNFe'))
         numero_nota = limpar_numero(find_text_recursive(root, 'nNF'))
         
         if not chave_acesso: return None, "Chave de Acesso ausente."
-        if not numero_nota: numero_nota = "0"
+        if not numero_nota: numero_nota = "0" # Segurança
 
+        # --- 4. REFERÊNCIA ---
         mes_ref = data_pagamento.month
         ano_ref = data_pagamento.year
 
@@ -192,45 +166,23 @@ def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
 
     if valor_pagar <= 0: return None, "Valor zerado."
 
-    # --- REGRAS APLICADAS ---
+    # --- LÓGICA DE RESOLUÇÃO DE ERROS (217 e 302) ---
     
-    regras = obter_regras_uf(dest_uf)
+    # Configuração Padrão - Opção 1 fixada
+    # Tenta enganar o sistema usando Tipo 10 (Aceito) mas com Numero curto (Evita 302)
+    tipo_doc_final = "10"
+    valor_doc_final = numero_nota # Padrão seguro para Tipo 10 é o NÚMERO, não a CHAVE
     
-    tipo_doc_final = regras['tipo_doc']
-    cod_campo_extra = regras['campo_extra']
+    # Opções comentadas caso precise alterar no futuro:
+    # Opção 2: Tipo 22 + Chave de Acesso (Estados Modernos)
+    # tipo_doc_final = "22"
+    # valor_doc_final = chave_acesso
     
-    if regras['usar_chave_doc']:
-        valor_doc_final = chave_acesso
-    else:
-        valor_doc_final = numero_nota
-
-    # --- CORREÇÃO DA ORDEM E FORMATACAO (FIX 6 DIGITOS) ---
-
-    xml_detalhamento = ""
-    xml_produto_tag = ""
-
-    if regras['usa_detalhamento']:
-        # O VALOR "88" VIRA "000088" PARA SATISFAZER A REGRA DE 6 DÍGITOS
-        detalhe_formatado = str(produto).strip().zfill(6) 
-        
-        xml_detalhamento = f"<detalhamentoReceita>{detalhe_formatado}</detalhamentoReceita>"
-        xml_produto_tag = "" 
-    else:
-        xml_detalhamento = ""
-        xml_produto_tag = f"<produto>{produto}</produto>"
-
-    # Campo Extra
-    xml_extras = ""
-    if cod_campo_extra:
-        xml_extras = f"""
-        <camposExtras>
-            <campoExtra>
-                <codigo>{cod_campo_extra}</codigo>
-                <valor>{chave_acesso}</valor>
-            </campoExtra>
-        </camposExtras>"""
-
-    # --- XML FINAL ---
+    # Opção 3: Tipo 18 + Nº da Nota (Padrão Antigo)
+    # tipo_doc_final = "18"
+    # valor_doc_final = numero_nota
+    
+    # --- MONTAGEM XML ---
     
     xml_emitente = f"""
     <contribuinteEmitente>
@@ -257,6 +209,15 @@ def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
         <municipio>{dest_cMun}</municipio>
     </contribuinteDestinatario>"""
 
+    # Campo Extra 90: Vai a CHAVE COMPLETA (Isso é o que importa p/ validação fiscal)
+    xml_extras = f"""
+    <camposExtras>
+        <campoExtra>
+            <codigo>90</codigo>
+            <valor>{chave_acesso}</valor>
+        </campoExtra>
+    </camposExtras>"""
+
     xml_guia = f"""
     <TDadosGNRE versao="2.00">
         <ufFavorecida>{dest_uf}</ufFavorecida>
@@ -265,9 +226,8 @@ def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
         <itensGNRE>
             <item>
                 <receita>{receita}</receita>
-                {xml_detalhamento}
                 <documentoOrigem tipo="{tipo_doc_final}">{valor_doc_final}</documentoOrigem>
-                {xml_produto_tag}
+                <produto>{produto}</produto>
                 <referencia>
                     <periodo>0</periodo>
                     <mes>{mes_ref:02d}</mes>
@@ -289,14 +249,16 @@ def processar_nfe(arquivo_xml, receita, produto, data_pagamento):
 # --- INTERFACE ---
 
 st.set_page_config(page_title="Gerador de Lote GNRE", layout="wide")
-st.title("📄 Gerador de Lote GNRE (Correção Detalhamento 6 Dígitos)")
+st.title("📄 Gerador de Lote GNRE")
 
 with st.sidebar:
     st.header("Configurações")
-    st.info("Correção Aplicada: Detalhamento agora preenche 6 dígitos automaticamente (Ex: 88 vira 000088).")
+    
+    # Modo fixo: Tipo 10 + Nº da Nota (Resolve erro 302 e 217)
+    # Para alterar o modo, edite diretamente no código da função processar_nfe()
     
     cod_receita = st.text_input("Código Receita", value="100102")
-    cod_produto = st.text_input("Código Produto/Detalhamento", value="88")
+    cod_produto = st.text_input("Código Produto", value="88")
     data_pagto = st.date_input("Data Pagamento", value=date.today())
 
 uploaded_files = st.file_uploader("Upload XMLs", type=["xml"], accept_multiple_files=True)
@@ -308,8 +270,8 @@ if uploaded_files:
         log_erros = []
         total_valor_lote = 0.0
         
-        header = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n<TLote_GNRE versao="2.00" xmlns="http://www.gnre.pe.gov.br">\n    <guias>\n'
-        footer = '    </guias>\n</TLote_GNRE>'
+        header = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n<TLote_GNRE versao="2.00" xmlns="http://www.gnre.pe.gov.br">\n     <guias>\n'
+        footer = '     </guias>\n</TLote_GNRE>'
         
         progress_bar = st.progress(0)
 
